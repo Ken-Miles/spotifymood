@@ -1,0 +1,17 @@
+{
+  "name": "benbowen-automation",
+  "version": "0.1.0",
+  "description": "Discord bot that scores a friend's Spotify songs for mood (Phase 1 MVP)",
+  "main": "src/index.js",
+  "private": true,
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/index.js",
+    "test": "node --test test/scoring.test.js test/signin.test.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "discord.js": "^14.28.1"
+  }
+}
