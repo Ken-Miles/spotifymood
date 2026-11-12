@@ -94,7 +94,7 @@ async function pollAll() {
   }
 }
 
-client.once('ready', () => {
+client.once('clientReady', () => {
   console.log(`Logged in as ${client.user.tag}`);
   setInterval(pollAll, POLL_MS);
   pollAll();
