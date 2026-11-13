@@ -225,6 +225,11 @@ function startPlaylistSync(userId, linked) {
 }
 client.on('interactionCreate', async (i) => {
   if (i.commandName !== 'moodplaylist') return;
+  // Anyone can sign in, but only the allowlist can rate playlists (each rating uses Last.fm and Anthropic calls).
+  if (!allowed.has(i.user.id)) {
+    if (i.isAutocomplete()) return i.respond([]);
+    return i.reply({ content: "Playlist ratings are only for the bot's friends.", flags: MessageFlags.Ephemeral });
+  }
   const linked = db.getConnections(i.user.id).find((c) => c.provider === 'spotify');
   try {
     if (i.isAutocomplete()) {
