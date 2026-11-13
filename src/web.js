@@ -1,7 +1,7 @@
 // Sign-in page and OAuth callbacks. The friend signs in with Discord, then connects Spotify and/or Last.fm.
 const http = require('node:http');
 const crypto = require('node:crypto');
-const { sign, checkSig } = require('./crypto');
+const { sign, checkSig, verifyDiscord } = require('./crypto');
 
 const THIRTY_DAYS = 60 * 60 * 24 * 30;
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => (
@@ -56,6 +56,22 @@ function createWeb({ env, db, sealer, auth, allowed }) {
     req.on('end', () => resolve(data));
     req.on('error', reject);
   });
+  // Raw bytes, for signature checks. Discord's webhook bodies are small.
+  const readRaw = (req) => new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > 65536) return reject(new Error('body too large'));
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+  const empty = (res, status) => {
+    res.writeHead(status);
+    res.end();
+  };
 
   function signInPage() {
     return page('Mood bot', `<h1>Mood bot</h1>
@@ -123,16 +139,57 @@ ${card('spotify', 'Spotify')}${card('lastfm', 'Last.fm')}`));
     return redirect(res, '/');
   }
 
+  // Custom install URL: a chooser page, then Discord's authorize page for a server (bot) or a user install.
+  // Installs are recorded by the APPLICATION_AUTHORIZED webhook, not here.
+  const INSTALL_PERMISSIONS = '3072'; // View Channel + Send Messages, what the bot needs in #mood
+  // User installs get the account-level scopes from sign-in (linked roles, entitlements, email), not the guild-only
+  // applications.commands.permissions.update.
+  const USER_INSTALL_SCOPE = 'applications.commands identify email role_connections.write applications.entitlements';
+  function installPage() {
+    return page('Add the bot', `<h1>Add the mood bot</h1>
+<a class="btn" href="/discord/install/guild">Add to a server</a>
+<a class="btn" href="/discord/install/user">Add to my account</a>`);
+  }
+  function installRedirect(res, type) {
+    const params = type === 'user'
+      ? { scope: USER_INSTALL_SCOPE, integration_type: '1' }
+      : { scope: 'bot applications.commands', integration_type: '0', permissions: INSTALL_PERMISSIONS };
+    return redirect(res, `https://discord.com/api/oauth2/authorize?${new URLSearchParams({
+      client_id: env.DISCORD_CLIENT_ID, ...params,
+    })}`);
+  }
+
+  // Discord webhook events. Discord first sends a signed PING (type 0) to check the URL; events are type 1.
+  async function discordWebhook(req, res) {
+    const body = await readRaw(req);
+    const ok = verifyDiscord(env.DISCORD_PUBLIC_KEY, req.headers['x-signature-timestamp'] ?? '', body,
+      req.headers['x-signature-ed25519'] ?? '');
+    if (!ok) return empty(res, 401);
+    const event = JSON.parse(body);
+    if (event.type === 0) return empty(res, 204);
+    db.logDiscordEvent({
+      type: event.event.type, applicationId: event.application_id, timestamp: event.event.timestamp, payload: event,
+    });
+    console.log(`discord event: ${event.event.type}`);
+    return empty(res, 204);
+  }
+
   async function route(req, res) {
     const url = new URL(req.url, env.PUBLIC_BASE_URL);
     const cookies = parseCookies(req);
     const uid = readUid(cookies);
     const m = url.pathname.match(/^\/auth\/(discord|spotify|lastfm)\/(login|callback)$/);
+    const install = url.pathname.match(/^\/discord\/install\/(guild|user)$/);
 
     if (req.method === 'GET' && url.pathname === '/') return home(res, uid);
     if (req.method === 'POST' && url.pathname === '/disconnect') return disconnect(req, res, uid);
     if (req.method === 'GET' && m && m[2] === 'login') return login(m[1], res, uid);
     if (req.method === 'GET' && m) return callback(m[1], url, res, cookies, uid);
+    // Linked roles verification URL (set in the Developer Portal). Starts the Discord sign-in, which asks for role_connections.write.
+    if (req.method === 'GET' && url.pathname === '/discord/linked-roles') return login('discord', res, uid);
+    if (req.method === 'GET' && url.pathname === '/discord/install') return send(res, 200, installPage());
+    if (req.method === 'GET' && install) return installRedirect(res, install[1]);
+    if (req.method === 'POST' && url.pathname === '/discord/webhook') return discordWebhook(req, res);
     return send(res, 404, page('Not found', message('Not found.')));
   }
 

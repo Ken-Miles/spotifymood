@@ -13,7 +13,8 @@ const historyCommand = new SlashCommandBuilder()
     { name: 'Last 30 days', value: '30' },
     { name: 'All time', value: 'all' },
   ))
-  .setContexts([InteractionContextType.Guild, InteractionContextType.BotDM, InteractionContextType.PrivateChannel])
+  // DMs only: the result is posted to the channel it was run in, which a user install can't post to in a server.
+  .setContexts([InteractionContextType.BotDM, InteractionContextType.PrivateChannel])
   .setIntegrationTypes([ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall])
   .toJSON();
 

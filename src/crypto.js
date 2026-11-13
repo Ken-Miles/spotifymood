@@ -31,4 +31,16 @@ function checkSig(secret, value, sig) {
   return expected.length === given.length && crypto.timingSafeEqual(expected, given);
 }
 
-module.exports = { makeSealer, sign, checkSig };
+// Discord signs each webhook with the app's Ed25519 key over (timestamp + raw body). publicKeyHex is the app's public key.
+function verifyDiscord(publicKeyHex, timestamp, body, signatureHex) {
+  try {
+    const key = crypto.createPublicKey({
+      key: Buffer.from(`302a300506032b6570032100${publicKeyHex}`, 'hex'), format: 'der', type: 'spki',
+    });
+    return crypto.verify(null, Buffer.concat([Buffer.from(timestamp), body]), key, Buffer.from(signatureHex, 'hex'));
+  } catch {
+    return false;
+  }
+}
+
+module.exports = { makeSealer, sign, checkSig, verifyDiscord };

@@ -54,6 +54,14 @@ function openDb(file) {
       artist TEXT NOT NULL,
       PRIMARY KEY (playlist_id, position)
     );
+    CREATE TABLE IF NOT EXISTS discord_events (
+      id INTEGER PRIMARY KEY,
+      received_at TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      application_id TEXT,
+      event_timestamp TEXT,
+      payload TEXT NOT NULL
+    );
   `);
   return {
     getCachedScore(trackId) {
@@ -188,6 +196,16 @@ function openDb(file) {
                                ORDER BY score DESC, id DESC`).all(userId, sinceIso);
       const avg = rows.length ? rows.reduce((a, r) => a + r.score, 0) / rows.length : null;
       return { count: rows.length, avg, best: rows.slice(0, 3), worst: rows.slice(-3).reverse() };
+    },
+    // Discord webhook events (installs, entitlements, ...), kept as the full JSON body. Installs are APPLICATION_AUTHORIZED.
+    logDiscordEvent({ type, applicationId, timestamp, payload }) {
+      db.prepare(`INSERT INTO discord_events (received_at, event_type, application_id, event_timestamp, payload)
+                  VALUES (?, ?, ?, ?, ?)`)
+        .run(new Date().toISOString(), type, applicationId ?? null, timestamp ?? null, JSON.stringify(payload));
+    },
+    listDiscordEvents(limit = 100) {
+      return db.prepare('SELECT received_at, event_type, application_id, event_timestamp, payload FROM discord_events ORDER BY id DESC LIMIT ?')
+        .all(limit);
     },
     // A friend is tracked once they've signed in with Discord.
     listUsers() {

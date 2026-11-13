@@ -56,6 +56,21 @@ Open `PUBLIC_BASE_URL` and sign in with Discord. Your friend opens the same addr
 
 Requires Node.js 22.13 or newer. Storage uses Node's built-in `node:sqlite`, so there are no native modules to compile.
 
+### Discord install, webhook, and linked roles
+
+In the Developer Portal for the same app:
+
+1. **General Information → Public Key**: copy it into `DISCORD_PUBLIC_KEY`. The bot won't start without it.
+2. **Installation → Install Link → Custom URL**: `PUBLIC_BASE_URL/discord/install`. It offers "Add to a server" and "Add to my account".
+3. **Webhooks → Webhook URL**: `PUBLIC_BASE_URL/discord/webhook`. Save it, then turn on the events you want (Application Authorized and Deauthorized, Entitlement Create/Update/Delete, and the rest of the list). Discord checks the URL with a signed ping when you save.
+4. **Linked Roles → Verification URL** (for later): `PUBLIC_BASE_URL/discord/linked-roles`. It starts the Discord sign-in. Role data isn't written yet.
+
+Every webhook event is saved to the `discord_events` table with its type, time, and full JSON. Installs are `APPLICATION_AUTHORIZED` events, with `integration_type` 0 for a server or 1 for a user:
+
+```bash
+sqlite3 data/mood.db "SELECT received_at, json_extract(payload, '$.event.data.integration_type') AS type FROM discord_events WHERE event_type = 'APPLICATION_AUTHORIZED';"
+```
+
 ### Security notes
 
 - Only Discord IDs in `ALLOWED_DISCORD_IDS` can sign in, so nobody is tracked without being approved.

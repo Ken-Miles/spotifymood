@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
-const { makeSealer, sign, checkSig } = require('../src/crypto');
+const { makeSealer, sign, checkSig, verifyDiscord } = require('../src/crypto');
 const { makeProviders, resolveNowPlaying, lastfmSig } = require('../src/providers');
 const { createWeb } = require('../src/web');
 const { openDb } = require('../src/db');
@@ -94,6 +94,11 @@ test('sources the friend has not connected are never called', async () => {
 
 // --- web routes, with stubbed OAuth so no network is needed ---
 
+// Stands in for Discord's app key: webhook bodies are signed with the private half.
+const discordKeys = crypto.generateKeyPairSync('ed25519');
+const DISCORD_PUBLIC_KEY = discordKeys.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex');
+const signDiscord = (ts, body) => crypto.sign(null, Buffer.from(ts + body), discordKeys.privateKey).toString('hex');
+
 function startServer(allowed = new Set(['111'])) {
   const db = openDb(':memory:');
   const auth = {
@@ -105,7 +110,10 @@ function startServer(allowed = new Set(['111'])) {
     lastfmSession: async () => 'ben_lastfm',
   };
   const server = createWeb({
-    env: { PUBLIC_BASE_URL: 'http://localhost', SESSION_SECRET: 'test-secret' },
+    env: {
+      PUBLIC_BASE_URL: 'http://localhost', SESSION_SECRET: 'test-secret',
+      DISCORD_CLIENT_ID: '123', DISCORD_PUBLIC_KEY,
+    },
     db,
     sealer: makeSealer(KEY),
     auth,
@@ -170,6 +178,113 @@ test('an allowlisted Discord sign-in sets a signed cookie and saves the account'
     assert.equal(res.status, 302);
     assert.match(res.headers.getSetCookie().join(';'), /uid=111\./);
     assert.equal(db.listUsers()[0].account, 'Ben');
+  } finally {
+    server.close();
+  }
+});
+
+test('discord signatures verify only over the exact timestamp and body', () => {
+  const ts = '1700000000';
+  const body = '{"type":0}';
+  const sig = signDiscord(ts, body);
+  assert.equal(verifyDiscord(DISCORD_PUBLIC_KEY, ts, Buffer.from(body), sig), true);
+  assert.equal(verifyDiscord(DISCORD_PUBLIC_KEY, ts, Buffer.from('{"type":1}'), sig), false);
+  assert.equal(verifyDiscord(DISCORD_PUBLIC_KEY, ts, Buffer.from(body), 'not-hex'), false);
+});
+
+test('discord webhook: a signed PING gets 204 and logs nothing', async () => {
+  const { server, db, base } = await startServer();
+  try {
+    const body = JSON.stringify({ version: 1, application_id: '123', type: 0 });
+    const ts = '1700000000';
+    const res = await fetch(`${base}/discord/webhook`, {
+      method: 'POST', body, headers: { 'x-signature-timestamp': ts, 'x-signature-ed25519': signDiscord(ts, body) },
+    });
+    assert.equal(res.status, 204);
+    assert.equal(db.listDiscordEvents().length, 0);
+  } finally {
+    server.close();
+  }
+});
+
+test('discord webhook: an unsigned request is refused and logs nothing', async () => {
+  const { server, db, base } = await startServer();
+  try {
+    const body = JSON.stringify({ version: 1, application_id: '123', type: 1, event: { type: 'APPLICATION_AUTHORIZED', timestamp: 'now' } });
+    const res = await fetch(`${base}/discord/webhook`, { method: 'POST', body });
+    assert.equal(res.status, 401);
+    assert.equal(db.listDiscordEvents().length, 0);
+  } finally {
+    server.close();
+  }
+});
+
+test('discord webhook: a signed install event is logged with its type and time', async () => {
+  const { server, db, base } = await startServer();
+  try {
+    const body = JSON.stringify({
+      version: 1, application_id: '123', type: 1,
+      event: { type: 'APPLICATION_AUTHORIZED', timestamp: '2026-11-13T10:00:00.000Z', data: { integration_type: 1 } },
+    });
+    const ts = '1700000000';
+    const res = await fetch(`${base}/discord/webhook`, {
+      method: 'POST', body, headers: { 'x-signature-timestamp': ts, 'x-signature-ed25519': signDiscord(ts, body) },
+    });
+    assert.equal(res.status, 204);
+    const [row] = db.listDiscordEvents();
+    assert.equal(row.event_type, 'APPLICATION_AUTHORIZED');
+    assert.equal(row.event_timestamp, '2026-11-13T10:00:00.000Z');
+    assert.equal(JSON.parse(row.payload).event.data.integration_type, 1);
+  } finally {
+    server.close();
+  }
+});
+
+test('install page offers a server install and a user install', async () => {
+  const { server, base } = await startServer();
+  try {
+    const body = await (await fetch(`${base}/discord/install`)).text();
+    assert.match(body, /href="\/discord\/install\/guild"/);
+    assert.match(body, /href="\/discord\/install\/user"/);
+  } finally {
+    server.close();
+  }
+});
+
+test('guild install asks Discord for the bot scope on a server', async () => {
+  const { server, base } = await startServer();
+  try {
+    const res = await fetch(`${base}/discord/install/guild`, noRedirect);
+    assert.equal(res.status, 302);
+    const u = new URL(res.headers.get('location'));
+    assert.equal(u.searchParams.get('client_id'), '123');
+    assert.equal(u.searchParams.get('integration_type'), '0');
+    assert.equal(u.searchParams.get('scope'), 'bot applications.commands');
+    assert.equal(u.searchParams.get('permissions'), '3072');
+  } finally {
+    server.close();
+  }
+});
+
+test('user install asks Discord for a user install with no bot scope', async () => {
+  const { server, base } = await startServer();
+  try {
+    const res = await fetch(`${base}/discord/install/user`, noRedirect);
+    const u = new URL(res.headers.get('location'));
+    assert.equal(u.searchParams.get('integration_type'), '1');
+    assert.equal(u.searchParams.get('scope'), 'applications.commands identify email role_connections.write applications.entitlements');
+  } finally {
+    server.close();
+  }
+});
+
+test('linked roles URL starts the Discord sign-in with a state cookie', async () => {
+  const { server, base } = await startServer();
+  try {
+    const res = await fetch(`${base}/discord/linked-roles`, noRedirect);
+    assert.equal(res.status, 302);
+    assert.match(res.headers.get('location'), /^https:\/\/discord\.test\/authorize\?state=/);
+    assert.match(res.headers.getSetCookie().join(';'), /oauth_state=/);
   } finally {
     server.close();
   }
