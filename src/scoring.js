@@ -42,16 +42,19 @@ async function llmScore(artist, track, apiKey) {
     },
     body: JSON.stringify({
       model: 'claude-haiku-5-5',
-      max_tokens: 10,
+      // Thinking is on by default on Haiku 5.5 and would use up max_tokens before any text is written.
+      thinking: { type: 'disabled' },
+      max_tokens: 50,
       messages: [{
         role: 'user',
-        content: `Rate the mood of the song "${track}" by ${artist} on a 1-10 scale, where 1 is very sad and 10 is very happy. Reply with only the number.`,
+        content: `Rate the mood of the song "${track}" by ${artist} on a 1-10 scale, where 1 is very sad and 10 is very happy. `
+          + 'If you don\'t know the song, judge from the title and artist. Always reply with only a number.',
       }],
     }),
   });
   if (!res.ok) return null;
   const data = await res.json();
-  const n = parseFloat(data?.content?.[0]?.text);
+  const n = parseFloat(data?.content?.find((b) => b.type === 'text')?.text);
   if (Number.isNaN(n)) return null;
   return Math.round(Math.min(10, Math.max(1, n)) * 10) / 10;
 }
@@ -75,4 +78,62 @@ function moodEmoji(score) {
   return '😢';
 }
 
-module.exports = { scoreFromTags, scoreTrack, moodEmoji, TAG_POINTS };
+// Parses "1: 6" style lines into a score per song (null where a line is missing or not a number).
+function parseBatchReply(text, count) {
+  const scores = new Array(count).fill(null);
+  for (const line of String(text ?? '').split('\n')) {
+    const m = line.match(/^\s*(\d+)\s*[:.)-]\s*(\d+(?:\.\d+)?)/);
+    if (!m) continue;
+    const i = Number(m[1]) - 1;
+    const n = parseFloat(m[2]);
+    if (i >= 0 && i < count && !Number.isNaN(n)) scores[i] = Math.round(Math.min(10, Math.max(1, n)) * 10) / 10;
+  }
+  return scores;
+}
+
+// Rates many songs in one Claude call. Returns one score (or null) per song, in order.
+async function llmScoreBatch(songs, apiKey) {
+  if (songs.length === 0) return [];
+  const list = songs.map((s, i) => `${i + 1}. "${s.track}" by ${s.artist}`).join('\n');
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-haiku-5-5',
+      thinking: { type: 'disabled' },
+      max_tokens: 20 * songs.length + 50,
+      messages: [{
+        role: 'user',
+        content: `Rate the mood of each song on a 1-10 scale, where 1 is very sad and 10 is very happy. `
+          + 'If you don\'t know a song, judge from its title and artist. '
+          + `Reply with one line per song in the form "number: score" and nothing else.\n\n${list}`,
+      }],
+    }),
+  });
+  if (!res.ok) return new Array(songs.length).fill(null);
+  const data = await res.json();
+  return parseBatchReply(data?.content?.find((b) => b.type === 'text')?.text, songs.length);
+}
+
+// One ID per song, whichever source reported it (Discord, Spotify and Last.fm each use different IDs).
+function songKey(artist, track) {
+  const clean = (s) => String(s).toLowerCase().replace(/\s+/g, ' ').trim();
+  return `${clean(artist)}|${clean(track)}`;
+}
+
+// Spotify track link, or undefined when the ID isn't a Spotify track ID.
+function spotifyTrackUrl(id) {
+  return /^[A-Za-z0-9]{22}$/.test(String(id ?? '')) ? `https://open.spotify.com/track/${id}` : undefined;
+}
+
+// A song as shown in embeds and posts: the name is in code, linked to Spotify when the URL is known. The artist is in code too.
+function songText(track, artist, url) {
+  const title = String(track).replace(/[`[\]]/g, "'");
+  const name = url ? `[\`${title}\`](${url})` : `\`${title}\``;
+  return `${name} — \`${String(artist).replace(/`/g, "'")}\``;
+}
+
+module.exports = {
+  spotifyTrackUrl, songText,
+  scoreFromTags, scoreTrack, moodEmoji, TAG_POINTS, fetchTopTags, parseBatchReply, llmScoreBatch, songKey,
+};

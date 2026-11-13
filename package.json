@@ -6,7 +6,7 @@
   "private": true,
   "scripts": {
     "start": "node --env-file-if-exists=.env src/index.js",
-    "test": "node --test test/scoring.test.js test/signin.test.js"
+    "test": "node --test test/scoring.test.js test/signin.test.js test/mood.test.js test/history.test.js test/songkey.test.js test/playlist.test.js test/playlist-store.test.js test/breakdown.test.js test/goto.test.js"
   },
   "engines": {
     "node": ">=22.13"

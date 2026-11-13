@@ -5,7 +5,12 @@ const DISCORD_API = 'https://discord.com/api';
 const SPOTIFY_ACCOUNTS = 'https://accounts.spotify.com';
 const SPOTIFY_API = 'https://api.spotify.com/v1';
 const LASTFM_API = 'https://ws.audioscrobbler.com/2.0/';
-const SPOTIFY_SCOPES = 'user-read-currently-playing user-read-playback-state';
+const SPOTIFY_SCOPES = [
+  'user-read-playback-state', 'user-read-currently-playing', // Spotify Connect
+  'user-read-playback-position', 'user-top-read', 'user-read-recently-played', // listening history
+  'user-read-email', // users
+  'playlist-read-private', 'playlist-read-collaborative', // playlists, including private and shared ones
+].join(' ');
 
 // Most reliable first: Discord pushes presence in real time, Spotify is near-live, Last.fm lags on scrobbles.
 const PRIORITY = ['discord', 'spotify', 'lastfm'];
@@ -68,7 +73,9 @@ function makeProviders(env) {
     discordLogin(state) {
       return `${DISCORD_API}/oauth2/authorize?${new URLSearchParams({
         client_id: env.DISCORD_CLIENT_ID, redirect_uri: redirect('discord'),
-        response_type: 'code', scope: 'identify', state,
+        response_type: 'code', state,
+        // applications.commands.update is left out: Discord rejects it on this app's sign-in URL (400 {"scope": ["3"]}).
+        scope: 'email identify role_connections.write applications.commands.permissions.update applications.entitlements',
       })}`;
     },
     async discordExchange(code) {
@@ -98,6 +105,43 @@ function makeProviders(env) {
       }), 'spotify user');
       return { name: me.display_name || me.id, refresh: tok.refresh_token };
     },
+    // All of the user's playlists. A connection made before the playlist scopes existed gets HTTP 403.
+    async spotifyPlaylists(refresh) {
+      const headers = { authorization: `Bearer ${await spotifyAccess(refresh)}` };
+      const out = [];
+      let url = `${SPOTIFY_API}/me/playlists?limit=50`;
+      while (url) {
+        const data = await json(await fetch(url, { headers }), 'spotify playlists');
+        for (const p of data.items) {
+          out.push({ id: p.id, name: p.name, image: p.images?.[0]?.url, total: p.tracks?.total ?? p.items?.total ?? 0 });
+        }
+        url = data.next;
+      }
+      return out;
+    },
+    // One playlist's name, cover and track count, by ID.
+    async spotifyPlaylist(refresh, playlistId) {
+      const headers = { authorization: `Bearer ${await spotifyAccess(refresh)}` };
+      const data = await json(await fetch(`${SPOTIFY_API}/playlists/${playlistId}`, { headers }), 'spotify playlist');
+      return { id: data.id, name: data.name, image: data.images?.[0]?.url, total: data.tracks?.total ?? data.items?.total ?? 0 };
+    },
+    // Tracks in a playlist, with Spotify's newer /items path and the older /tracks path as a fallback.
+    async spotifyPlaylistTracks(refresh, playlistId) {
+      const headers = { authorization: `Bearer ${await spotifyAccess(refresh)}` };
+      let res = await fetch(`${SPOTIFY_API}/playlists/${playlistId}/items?limit=50`, { headers });
+      if (res.status === 404) res = await fetch(`${SPOTIFY_API}/playlists/${playlistId}/tracks?limit=50`, { headers });
+      const out = [];
+      let data = await json(res, 'spotify playlist tracks');
+      for (;;) {
+        for (const entry of data.items) {
+          const t = entry.item ?? entry.track;
+          if (t?.type !== 'track' || !t.name) continue; // skips podcast episodes and removed tracks
+          out.push({ track: t.name, artist: t.artists.map((a) => a.name).join(', '), spotifyId: t.id });
+        }
+        if (!data.next) return out;
+        data = await json(await fetch(data.next, { headers }), 'spotify playlist tracks');
+      }
+    },
     // 204 means nothing is playing.
     async spotifyNowPlaying(refresh) {
       const res = await fetch(`${SPOTIFY_API}/me/player/currently-playing`, {
@@ -126,6 +170,28 @@ function makeProviders(env) {
       }), 'lastfm session');
       if (!data.session) throw new Error(`lastfm session failed: ${data.message || 'no session'}`);
       return data.session.name;
+    },
+    // Scrobbles since `from` (unix seconds), oldest pages first. Skips the "now playing" entry.
+    async lastfmHistory(username, from) {
+      const plays = [];
+      for (let page = 1; ; page++) {
+        const p = new URLSearchParams({
+          method: 'user.getrecenttracks', user: username, limit: '200', page: String(page),
+          from: String(from), api_key: env.LASTFM_API_KEY, format: 'json',
+        });
+        const data = await json(await fetch(`${LASTFM_API}?${p}`), 'lastfm history');
+        const rt = data.recenttracks;
+        for (const t of [].concat(rt?.track ?? [])) {
+          if (!t.date) continue; // now playing has no date
+          const artist = t.artist['#text'];
+          plays.push({
+            trackId: `lastfm|${artist}|${t.name}`, track: t.name, artist,
+            playedAt: new Date(Number(t.date.uts) * 1000).toISOString(),
+          });
+        }
+        if (page >= Number(rt?.['@attr']?.totalPages ?? 1)) return plays;
+        await new Promise((r) => setTimeout(r, 250)); // stay well under Last.fm's rate limit
+      }
     },
     async lastfmNowPlaying(username) {
       const p = new URLSearchParams({

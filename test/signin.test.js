@@ -45,17 +45,17 @@ const env = {
   LASTFM_API_KEY: 'k', LASTFM_SHARED_SECRET: 'z',
 };
 
-test('discord login asks only for identify and uses the right redirect', () => {
+test('discord login asks for the agreed scopes and uses the right redirect', () => {
   const auth = makeProviders(env);
   const u = new URL(auth.discordLogin('abc'));
-  assert.equal(u.searchParams.get('scope'), 'identify');
+  assert.equal(u.searchParams.get('scope'), 'email identify role_connections.write applications.commands.permissions.update applications.entitlements');
   assert.equal(u.searchParams.get('redirect_uri'), 'https://mood.example.com/auth/discord/callback');
   assert.equal(u.searchParams.get('state'), 'abc');
 });
 
-test('spotify login requests the playback read scopes', () => {
+test('spotify login requests the agreed scopes', () => {
   const u = new URL(makeProviders(env).spotifyLogin('abc'));
-  assert.match(u.searchParams.get('scope'), /user-read-currently-playing/);
+  assert.equal(u.searchParams.get('scope'), 'user-read-playback-state user-read-currently-playing user-read-playback-position user-top-read user-read-recently-played user-read-email playlist-read-private playlist-read-collaborative');
   assert.equal(u.searchParams.get('redirect_uri'), 'https://mood.example.com/auth/spotify/callback');
 });
 
