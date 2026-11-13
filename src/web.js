@@ -142,9 +142,9 @@ ${card('spotify', 'Spotify')}${card('lastfm', 'Last.fm')}`));
   // Custom install URL: a chooser page, then Discord's authorize page for a server (bot) or a user install.
   // Installs are recorded by the APPLICATION_AUTHORIZED webhook, not here.
   const INSTALL_PERMISSIONS = '3072'; // View Channel + Send Messages, what the bot needs in #mood
-  // User installs get the account-level scopes from sign-in (linked roles, entitlements, email), not the guild-only
-  // applications.commands.permissions.update.
-  const USER_INSTALL_SCOPE = 'applications.commands identify email role_connections.write applications.entitlements';
+  // Discord rejected the account scopes (identify, email, role_connections.write, applications.entitlements) on user installs
+  // with "invalid scope". Sign-in already asks for those, so linked roles and entitlements don't need them here.
+  const USER_INSTALL_SCOPE = 'applications.commands';
   function installPage() {
     return page('Add the bot', `<h1>Add the mood bot</h1>
 <a class="btn" href="/discord/install/guild">Add to a server</a>

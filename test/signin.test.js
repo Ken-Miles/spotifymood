@@ -272,7 +272,7 @@ test('user install asks Discord for a user install with no bot scope', async () 
     const res = await fetch(`${base}/discord/install/user`, noRedirect);
     const u = new URL(res.headers.get('location'));
     assert.equal(u.searchParams.get('integration_type'), '1');
-    assert.equal(u.searchParams.get('scope'), 'applications.commands identify email role_connections.write applications.entitlements');
+    assert.equal(u.searchParams.get('scope'), 'applications.commands');
   } finally {
     server.close();
   }
