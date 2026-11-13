@@ -24,7 +24,7 @@ function page(title, body) {
 
 const message = (text) => `<p>${esc(text)}</p><p><a href="/">Back to start</a></p>`;
 
-function createWeb({ env, db, sealer, auth, allowed }) {
+function createWeb({ env, db, sealer, auth }) {
   const secure = env.PUBLIC_BASE_URL.startsWith('https://');
   const cookie = (name, value, maxAge) =>
     `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
@@ -110,11 +110,8 @@ ${card('spotify', 'Spotify')}${card('lastfm', 'Last.fm')}`));
     if (url.searchParams.get('error')) return redirect(res, '/', { 'set-cookie': clear });
 
     if (provider === 'discord') {
+      // Anyone can sign in. Only ALLOWED_DISCORD_IDS show up in commands and get tracked.
       const me = await auth.discordExchange(url.searchParams.get('code'));
-      if (!allowed.has(me.id)) {
-        return send(res, 403, page('Not allowed', message("This Discord account isn't on the allowlist.")),
-          { 'set-cookie': clear });
-      }
       db.saveConnection(me.id, 'discord', me.name, null);
       return redirect(res, '/', { 'set-cookie': [clear, cookie('uid', signedUid(me.id), THIRTY_DAYS)] });
     }

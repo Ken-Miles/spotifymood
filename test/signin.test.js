@@ -99,7 +99,7 @@ const discordKeys = crypto.generateKeyPairSync('ed25519');
 const DISCORD_PUBLIC_KEY = discordKeys.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex');
 const signDiscord = (ts, body) => crypto.sign(null, Buffer.from(ts + body), discordKeys.privateKey).toString('hex');
 
-function startServer(allowed = new Set(['111'])) {
+function startServer() {
   const db = openDb(':memory:');
   const auth = {
     discordLogin: (state) => `https://discord.test/authorize?state=${state}`,
@@ -117,7 +117,6 @@ function startServer(allowed = new Set(['111'])) {
     db,
     sealer: makeSealer(KEY),
     auth,
-    allowed,
   });
   return new Promise((resolve) => {
     server.listen(0, () => resolve({ server, db, base: `http://localhost:${server.address().port}` }));
@@ -157,13 +156,15 @@ test('connecting Spotify needs a signed-in user', async () => {
   }
 });
 
-test('a Discord account not on the allowlist is refused', async () => {
-  const { server, base } = await startServer();
+test('a Discord account not on the allowlist can still sign in', async () => {
+  const { server, db, base } = await startServer();
   try {
     const res = await fetch(`${base}/auth/discord/callback?code=bad&state=abc`, {
       ...noRedirect, headers: { cookie: 'oauth_state=abc' },
     });
-    assert.equal(res.status, 403);
+    assert.equal(res.status, 302);
+    assert.match(res.headers.getSetCookie().join(';'), /uid=999\./);
+    assert.equal(db.getConnections('999')[0].provider, 'discord');
   } finally {
     server.close();
   }

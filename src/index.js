@@ -369,6 +369,6 @@ client.on('interactionCreate', async (i) => {
 client.login(env.DISCORD_TOKEN);
 
 const port = Number(env.PORT || 3000);
-createWeb({ env, db, sealer, auth, allowed }).listen(port, () => {
+createWeb({ env, db, sealer, auth }).listen(port, () => {
   console.log(`Sign-in page: ${env.PUBLIC_BASE_URL} (listening on port ${port})`);
 });
